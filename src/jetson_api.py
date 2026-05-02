@@ -1,29 +1,38 @@
+from flask import Flask, jsonify
 import serial
 import time
+import threading
 from pathlib import Path
 
 from src.preprocess import load_data, select_features, fit_scalers, transform_features, create_sequences
 from src.agent import load_lstm_model, IrrigationAgent
 from src.config import SEQ_LENGTH
 
-#PORT = "COM5"
-PORT = "/dev/ttyUSB0" # JETSON PORT
+PORT = "/dev/ttyUSB0"
 BAUD = 115200
 WATER_MIN_SECURITY = 15
 
+app = Flask(__name__)
+
+latest_data = {
+    "soil_moisture": None,
+    "water_level": None,
+    "predicted_moisture": None,
+    "action": "PUMP_OFF",
+    "reason": "Waiting for data",
+    "pump_status": "OFF"
+}
+
 
 def parse_esp32_line(line):
-    """
-    Format attendu:
-    MOISTURE:45;WATER:80
-    """
-    if not line.startswith("MOISTURE:"):
-        return None, None
-
     try:
+        if not line.startswith("MOISTURE:"):
+            return None, None
+
         parts = line.split(";")
         moisture = float(parts[0].split(":")[1])
         water = float(parts[1].split(":")[1])
+
         return moisture, water
     except Exception:
         return None, None
@@ -46,34 +55,28 @@ def init_agent():
     X_seq, _ = create_sequences(X_scaled, y_scaled, SEQ_LENGTH)
 
     model, _ = load_lstm_model(str(model_path))
-
     agent = IrrigationAgent(model, y_scaler)
 
     return agent, X_seq[-1]
 
 
-def main():
-    print("Connecting to ESP32...")
+def hardware_loop():
+    global latest_data
+
+    print("Loading IA agent...")
+    agent, sequence = init_agent()
+
+    print("Connecting ESP32...")
     ser = serial.Serial(PORT, BAUD, timeout=1)
     time.sleep(2)
 
-    agent, sequence = init_agent()
-
-    print("Agent IA prêt 🚀")
+    print("Jetson API + IA ready")
 
     while True:
         line = ser.readline().decode(errors="ignore").strip()
-
         moisture, water = parse_esp32_line(line)
 
         if moisture is None:
-            continue
-
-        print(f"Humidité sol: {moisture}% | Niveau eau: {water}%")
-
-        if water < WATER_MIN_SECURITY:
-            print("Niveau eau faible -> pompe OFF sécurité")
-            ser.write(b"OFF\n")
             continue
 
         result = agent.run(
@@ -82,13 +85,48 @@ def main():
             rain_forecast=0.0
         )
 
-        print("Decision:", result["action"])
+        action = result["action"]
+        reason = result["reason"]
 
-        if result["action"] == "PUMP_ON":
+        if water < WATER_MIN_SECURITY:
+            action = "PUMP_OFF"
+            reason = "Water level too low"
+
+        if action == "PUMP_ON":
             ser.write(b"ON\n")
+            pump_status = "ON"
         else:
             ser.write(b"OFF\n")
+            pump_status = "OFF"
+
+        latest_data = {
+            "soil_moisture": moisture,
+            "water_level": water,
+            "predicted_moisture": round(result["predicted_moisture"], 2),
+            "action": action,
+            "reason": reason,
+            "pump_status": pump_status
+        }
+
+        print(latest_data)
+
+
+@app.route("/status")
+def status():
+    return jsonify(latest_data)
+
+
+@app.route("/")
+def home():
+    return jsonify({
+        "message": "Smart Irrigation Jetson API is running",
+        "status_url": "/status"
+    })
 
 
 if __name__ == "__main__":
-    main()
+    thread = threading.Thread(target=hardware_loop)
+    thread.daemon = True
+    thread.start()
+
+    app.run(host="0.0.0.0", port=5000)
