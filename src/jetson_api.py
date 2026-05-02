@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import serial
 import time
 import threading
@@ -14,13 +14,17 @@ WATER_MIN_SECURITY = 15
 
 app = Flask(__name__)
 
+control_mode = "AUTO"        # AUTO or MANUAL
+manual_action = "PUMP_OFF"   # PUMP_ON or PUMP_OFF
+
 latest_data = {
     "soil_moisture": None,
     "water_level": None,
     "predicted_moisture": None,
     "action": "PUMP_OFF",
     "reason": "Waiting for data",
-    "pump_status": "OFF"
+    "pump_status": "OFF",
+    "control_mode": "AUTO"
 }
 
 
@@ -61,7 +65,7 @@ def init_agent():
 
 
 def hardware_loop():
-    global latest_data
+    global latest_data, control_mode, manual_action
 
     print("Loading IA agent...")
     agent, sequence = init_agent()
@@ -85,8 +89,14 @@ def hardware_loop():
             rain_forecast=0.0
         )
 
-        action = result["action"]
+        ai_action = result["action"]
         reason = result["reason"]
+
+        if control_mode == "AUTO":
+            action = ai_action
+        else:
+            action = manual_action
+            reason = "Manual mode command"
 
         if water < WATER_MIN_SECURITY:
             action = "PUMP_OFF"
@@ -105,7 +115,10 @@ def hardware_loop():
             "predicted_moisture": round(result["predicted_moisture"], 2),
             "action": action,
             "reason": reason,
-            "pump_status": pump_status
+            "pump_status": pump_status,
+            "control_mode": control_mode,
+            "ai_action": ai_action,
+            "manual_action": manual_action
         }
 
         print(latest_data)
@@ -116,11 +129,34 @@ def status():
     return jsonify(latest_data)
 
 
+@app.route("/control", methods=["POST"])
+def control():
+    global control_mode, manual_action
+
+    data = request.get_json()
+
+    mode = data.get("mode")
+    action = data.get("action")
+
+    if mode in ["AUTO", "MANUAL"]:
+        control_mode = mode
+
+    if action in ["PUMP_ON", "PUMP_OFF"]:
+        manual_action = action
+
+    return jsonify({
+        "status": "ok",
+        "control_mode": control_mode,
+        "manual_action": manual_action
+    })
+
+
 @app.route("/")
 def home():
     return jsonify({
         "message": "Smart Irrigation Jetson API is running",
-        "status_url": "/status"
+        "status_url": "/status",
+        "control_url": "/control"
     })
 
 
