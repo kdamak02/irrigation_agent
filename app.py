@@ -2,8 +2,8 @@ import streamlit as st
 import requests
 import time
 
-JETSON_URL = "http://192.168.137.86:5000/status"
-JETSON_CONTROL_URL = "http://192.168.137.86:5000/control"
+JETSON_URL = "http://192.168.1.70:5000/status"
+JETSON_CONTROL_URL = "http://192.168.1.70:5000/control"
 
 st.set_page_config(page_title="Smart Irrigation", layout="wide")
 st.title("🌱 Smart Irrigation System (Jetson + ESP32)")
